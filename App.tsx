@@ -32,11 +32,11 @@ const App: React.FC = () => {
   const [visualizedImage, setVisualizedImage] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<VisualizerState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [keySelected, setKeySelected] = useState(false);
+  const [keySelected, setKeySelected] = useState(true);
 
-  useEffect(() => {
-    checkApiKey();
-  }, []);
+  // useEffect(() => {
+  //   checkApiKey();
+  // }, []);
 
   const checkApiKey = async () => {
     try {
