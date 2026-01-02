@@ -1,0 +1,7 @@
+{
+  "name": "Bespoke Wallpaper Visualizer",
+  "description": "A high-precision spatial visualization tool for luxury wallpapers. Calibrate room dimensions using A4 or Door frame references and preview mathematically accurate wallpaper designs with photorealistic lighting.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
