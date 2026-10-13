@@ -3,9 +3,21 @@ import crypto from "crypto";
 // api/visionworx-save.js — server-only VisionWorx callback (Express locally, Vercel serverless in prod).
 // Secrets stay here. Never put VWX_SECRET in browser code.
 
+const DEFAULT_CALLBACK_HOSTS = ["www.vision-worx.com", "vision-worx.com"];
+
 function env(name) {
   const value = process.env[name];
   return value == null ? "" : String(value).trim();
+}
+
+/** Production VisionWorx hosts + Vercel preview/staging deployments. */
+function isAllowedCallbackHost(host) {
+  const configured = normalizeHost(env("VWX_APP_HOST"));
+  if (configured) return host === configured;
+  if (DEFAULT_CALLBACK_HOSTS.includes(host)) return true;
+  // Gen Tools often call back to VisionWorx preview apps on Vercel.
+  if (host.endsWith(".vercel.app") && host.includes("visionworx")) return true;
+  return false;
 }
 
 async function readJsonBody(req) {
@@ -41,6 +53,53 @@ function normalizeHost(value) {
   return trimmed.replace(/^\/+/, "").split("/")[0];
 }
 
+function sanitizeAsset(asset, index = 0) {
+  let data = String(asset?.data_base64 || "").trim();
+  // Strip accidental data-URL prefix.
+  if (data.includes(",")) data = data.split(",").pop() || "";
+  data = data.replace(/\s+/g, "");
+
+  let contentType = String(asset?.content_type || "image/png").trim().toLowerCase();
+  if (!contentType.includes("/")) contentType = "image/png";
+
+  let filename = String(asset?.filename || `output-${index + 1}.png`)
+    .trim()
+    .replace(/[^\w.\-]+/g, "_")
+    .slice(0, 120);
+  if (!filename.includes(".")) {
+    const ext =
+      contentType === "image/jpeg" || contentType === "image/jpg"
+        ? "jpg"
+        : contentType === "image/webp"
+          ? "webp"
+          : contentType === "image/gif"
+            ? "gif"
+            : contentType.startsWith("video/")
+              ? "mp4"
+              : "png";
+    filename = `${filename}.${ext}`;
+  }
+
+  return {
+    data_base64: data,
+    content_type: contentType === "image/jpg" ? "image/jpeg" : contentType,
+    filename,
+  };
+}
+
+function sanitizeMetadata(metadata) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const out = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (value == null) continue;
+    const t = typeof value;
+    if (t === "string" || t === "number" || t === "boolean") {
+      out[String(key).slice(0, 64)] = t === "string" ? value.slice(0, 500) : value;
+    }
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 async function postSigned(callback, payload, idempotencyKey) {
   const keyId = env("VWX_KEY_ID");
   const secret = env("VWX_SECRET");
@@ -52,6 +111,7 @@ async function postSigned(callback, payload, idempotencyKey) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Accept: "application/json",
       "X-VWX-Key-Id": keyId,
       "X-VWX-Timestamp": ts,
       "X-VWX-Signature": "sha256=" + sig,
@@ -59,8 +119,17 @@ async function postSigned(callback, payload, idempotencyKey) {
     },
     body,
   });
-  const result = await response.json().catch(() => ({}));
-  return { ok: response.ok, status: response.status, result };
+
+  const rawText = await response.text();
+  let result = {};
+  if (rawText) {
+    try {
+      result = JSON.parse(rawText);
+    } catch {
+      result = { message: rawText.slice(0, 500) };
+    }
+  }
+  return { ok: response.ok, status: response.status, result, rawText: rawText.slice(0, 500) };
 }
 
 function upstreamError(posted) {
@@ -70,7 +139,8 @@ function upstreamError(posted) {
     r.message ||
     r.detail ||
     (Array.isArray(r.errors) ? r.errors.join(", ") : null) ||
-    (typeof r === "string" ? r : null);
+    (typeof r === "string" ? r : null) ||
+    posted.rawText;
   return detail
     ? `VisionWorx callback HTTP ${posted.status}: ${detail}`
     : `VisionWorx callback failed (HTTP ${posted.status})`;
@@ -104,25 +174,28 @@ export default async function handler(req, res) {
   }
 
   let callbackUrl = String(callback).trim();
-  try {
-    // Normalize once so host checks and fetch use a valid absolute URL.
-    callbackUrl = decodeURIComponent(callbackUrl);
-  } catch {
-    // keep trimmed value
+  // URLSearchParams already decodes once; only decode again if still percent-encoded.
+  if (/%[0-9A-Fa-f]{2}/.test(callbackUrl)) {
+    try {
+      callbackUrl = decodeURIComponent(callbackUrl);
+    } catch {
+      // keep trimmed value
+    }
   }
   try {
-    // Throws if not a valid absolute URL.
     // eslint-disable-next-line no-new
     new URL(callbackUrl);
   } catch {
     return res.status(400).json({ error: "Invalid callback URL", callback: callbackUrl.slice(0, 120) });
   }
 
-  const allowedHost = normalizeHost(env("VWX_APP_HOST") || "www.vision-worx.com");
   const gotHost = new URL(callbackUrl).host;
-  if (gotHost !== allowedHost) {
+  if (!isAllowedCallbackHost(gotHost)) {
+    const expected = env("VWX_APP_HOST")
+      ? normalizeHost(env("VWX_APP_HOST"))
+      : "www.vision-worx.com, vision-worx.com, or a *visionworx*.vercel.app host";
     return res.status(400).json({
-      error: `Unexpected callback host (got ${gotHost}, expected ${allowedHost})`,
+      error: `Unexpected callback host (got ${gotHost}, expected ${expected})`,
     });
   }
 
@@ -134,11 +207,11 @@ export default async function handler(req, res) {
     const posted = await postSigned(
       callbackUrl,
       {
-        run_id: runId,
+        run_id: String(runId),
         status: "failed",
         error: String(error || "Generation failed").slice(0, 500),
       },
-      runId + ":failed",
+      String(runId) + ":failed",
     );
     if (!posted.ok) {
       return res.status(502).json({ error: upstreamError(posted), result: posted.result });
@@ -146,30 +219,31 @@ export default async function handler(req, res) {
     return res.status(200).json(posted.result);
   }
 
-  const assetList =
+  const rawAssets =
     Array.isArray(assets) && assets.length > 0
       ? assets
       : imageBase64
         ? [{ data_base64: imageBase64, content_type: contentType, filename }]
         : null;
 
-  if (!assetList) {
+  if (!rawAssets) {
     return res.status(400).json({
       error: "assets (or imageBase64) are required for a successful save",
     });
   }
 
-  // Guard empty base64 which VisionWorx rejects with 400.
-  if (assetList.some((a) => !a?.data_base64)) {
+  const assetList = rawAssets.map((asset, i) => sanitizeAsset(asset, i));
+  if (assetList.some((a) => !a.data_base64)) {
     return res.status(400).json({ error: "Each asset needs data_base64" });
   }
 
+  const cleanMeta = sanitizeMetadata(metadata);
   const payload = {
-    run_id: runId,
+    run_id: String(runId),
     status: "completed",
     final: final !== false,
     assets: assetList,
-    ...(metadata && typeof metadata === "object" ? { metadata } : {}),
+    ...(cleanMeta ? { metadata: cleanMeta } : {}),
   };
 
   let posted;
@@ -177,7 +251,7 @@ export default async function handler(req, res) {
     posted = await postSigned(
       callbackUrl,
       payload,
-      runId + ":" + (final === false ? "part-" + Date.now() : "final"),
+      String(runId) + ":" + (final === false ? "part-" + Date.now() : "final"),
     );
   } catch (err) {
     return res.status(502).json({
@@ -186,7 +260,6 @@ export default async function handler(req, res) {
   }
 
   if (!posted.ok) {
-    // Use 502 so the Network tab is not confused with our own validation 400s.
     return res.status(502).json({
       error: upstreamError(posted),
       result: posted.result,

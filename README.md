@@ -30,7 +30,7 @@ View your app in AI Studio: https://ai.studio/apps/drive/1ed-K-J5usbPzs8bmGVd65O
 | `APP_PASSWORD` | Build | Standalone unlock password |
 | `VWX_KEY_ID` | Runtime | VisionWorx signing key id |
 | `VWX_SECRET` | Runtime | Server-only HMAC secret |
-| `VWX_APP_HOST` | Runtime | Allowed callback host (defaults to `www.vision-worx.com`) |
+| `VWX_APP_HOST` | Runtime | Allowed callback host (optional; defaults allow vision-worx.com + `*visionworx*.vercel.app`) |
 
 Enable **Build** access for `GEMINI_API_KEY` and `APP_PASSWORD` (Vite bakes them at build time). Keep `VWX_*` server-only — do not prefix with `VITE_`.
 

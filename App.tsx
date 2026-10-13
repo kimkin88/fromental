@@ -234,19 +234,19 @@ const App: React.FC = () => {
         filename: `fromental-visualization-${Date.now()}.jpg`,
         metadata: {
           tool: 'fromental-wallpaper-visualizer',
-          total_rolls_estimated: analysisData.total_rolls_estimated,
-          reference_type: analysisData.calibration?.reference_type,
-          region_count: analysisData.regions?.length ?? completedBoxes.length,
+          total_rolls_estimated: Number(analysisData.total_rolls_estimated) || 0,
+          region_count: Number(analysisData.regions?.length ?? completedBoxes.length) || 0,
         },
       });
     } catch (saveErr: any) {
       const detail = extractErrorDetail(saveErr);
-      setError(`Visualization ready, but VisionWorx save failed: ${detail}`);
-      try {
-        await reportVisionworxFailure(detail || "VisionWorx save failed");
-      } catch {
-        // ignore secondary callback errors
-      }
+      // Do NOT reportVisionworxFailure here — that finishes the VisionWorx run and
+      // blocks retries with "Run is already finished." Only generation failures report.
+      setError(
+        /already finished/i.test(detail)
+          ? `VisionWorx run is already finished. Open a new run from VisionWorx Open… and try again. (${detail})`
+          : `Visualization ready, but VisionWorx save failed: ${detail}`,
+      );
     }
   };
 
