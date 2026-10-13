@@ -118,14 +118,12 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Invalid callback URL", callback: callbackUrl.slice(0, 120) });
   }
 
-  const allowedHost = normalizeHost(env("VWX_APP_HOST"));
-  if (allowedHost) {
-    const gotHost = new URL(callbackUrl).host;
-    if (gotHost !== allowedHost) {
-      return res.status(400).json({
-        error: `Unexpected callback host (got ${gotHost}, expected ${allowedHost})`,
-      });
-    }
+  const allowedHost = normalizeHost(env("VWX_APP_HOST") || "www.vision-worx.com");
+  const gotHost = new URL(callbackUrl).host;
+  if (gotHost !== allowedHost) {
+    return res.status(400).json({
+      error: `Unexpected callback host (got ${gotHost}, expected ${allowedHost})`,
+    });
   }
 
   if (!env("VWX_KEY_ID") || !env("VWX_SECRET")) {
