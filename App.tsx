@@ -262,6 +262,19 @@ const App: React.FC = () => {
     setCurrentBox(null);
   };
 
+  const exportHighRes = () => {
+    if (!visualizedImage) return;
+    const mimeMatch = visualizedImage.match(/^data:([^;]+);/);
+    const mime = mimeMatch?.[1] || 'image/png';
+    const ext = mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : mime.includes('webp') ? 'webp' : 'png';
+    const link = document.createElement('a');
+    link.href = visualizedImage;
+    link.download = `fromental-render-${Date.now()}.${ext}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
   if (!unlocked) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6 text-center">
@@ -477,7 +490,12 @@ const App: React.FC = () => {
                 </div>
                 <div className="flex gap-8 mt-12">
                    <button onClick={reset} className="btn-outline px-12">New Simulation</button>
-                   <button className="btn-outline px-12 flex items-center gap-2">
+                   <button
+                     type="button"
+                     onClick={exportHighRes}
+                     disabled={!visualizedImage}
+                     className="btn-outline px-12 flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                   >
                      <Download className="w-4 h-4" /> Export High-Res Render
                    </button>
                 </div>
