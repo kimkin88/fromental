@@ -3,14 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Camera, Upload, Layers, Ruler, ChevronRight, RefreshCw, Download, FileText, Trash2, Globe, AlertCircle, Info, HelpCircle } from 'lucide-react';
 import { ImageUpload, VisualizerState, ReferenceType, Point, Box } from './types';
 import { analyzeMarkedRegions, generateMaskedVisualization } from './services/geminiService';
-import { saveToVisionworx, reportVisionworxFailure } from './lib/visionworxSave';
-
-async function dataUrlToFile(dataUrl: string, filename: string): Promise<File> {
-  const response = await fetch(dataUrl);
-  const blob = await response.blob();
-  const type = blob.type || 'image/png';
-  return new File([blob], filename, { type });
-}
+import { saveDataUrlToVisionworx, reportVisionworxFailure } from './lib/visionworxSave';
 
 function extractErrorDetail(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err ?? '');
@@ -236,10 +229,9 @@ const App: React.FC = () => {
     if (!resultImage || !analysisData) return;
 
     try {
-      const filename = `fromental-visualization-${Date.now()}.png`;
-      const file = await dataUrlToFile(resultImage, filename);
-      await saveToVisionworx(file, {
+      await saveDataUrlToVisionworx(resultImage, {
         final: true,
+        filename: `fromental-visualization-${Date.now()}.jpg`,
         metadata: {
           tool: 'fromental-wallpaper-visualizer',
           total_rolls_estimated: analysisData.total_rolls_estimated,
@@ -248,9 +240,10 @@ const App: React.FC = () => {
         },
       });
     } catch (saveErr: any) {
-      setError("Visualization ready, but VisionWorx save failed.");
+      const detail = extractErrorDetail(saveErr);
+      setError(`Visualization ready, but VisionWorx save failed: ${detail}`);
       try {
-        await reportVisionworxFailure(saveErr?.message || "VisionWorx save failed");
+        await reportVisionworxFailure(detail || "VisionWorx save failed");
       } catch {
         // ignore secondary callback errors
       }
