@@ -3,6 +3,35 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Camera, Upload, Layers, Ruler, ChevronRight, RefreshCw, Download, FileText, Trash2, Globe, AlertCircle, Info, HelpCircle } from 'lucide-react';
 import { ImageUpload, VisualizerState, ReferenceType, Point, Box } from './types';
 import { analyzeMarkedRegions, generateMaskedVisualization } from './services/geminiService';
+import { saveToVisionworx, reportVisionworxFailure } from './lib/visionworxSave';
+
+async function dataUrlToFile(dataUrl: string, filename: string): Promise<File> {
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  const type = blob.type || 'image/png';
+  return new File([blob], filename, { type });
+}
+
+function extractErrorDetail(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  try {
+    const parsed = JSON.parse(raw);
+    const msg = parsed?.error?.message || parsed?.message;
+    if (typeof msg === 'string' && msg.trim()) return msg.trim().slice(0, 240);
+  } catch {
+    // not JSON
+  }
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 240);
+}
+
+const APP_PASSWORD = process.env.APP_PASSWORD || '';
+const AUTH_SESSION_KEY = 'fromental_unlocked';
+
+function isVisionworxLaunch(): boolean {
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search);
+  return Boolean(params.get('vwx_run') && params.get('vwx_callback'));
+}
 
 declare global {
   interface AIStudio {
@@ -33,6 +62,36 @@ const App: React.FC = () => {
   const [metadata, setMetadata] = useState<VisualizerState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [keySelected, setKeySelected] = useState(true);
+  const [unlocked, setUnlocked] = useState(() => {
+    if (isVisionworxLaunch()) return true;
+    try {
+      return sessionStorage.getItem(AUTH_SESSION_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+
+  const handlePasswordSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!APP_PASSWORD) {
+      setPasswordError('APP_PASSWORD is not configured');
+      return;
+    }
+    if (passwordInput === APP_PASSWORD) {
+      try {
+        sessionStorage.setItem(AUTH_SESSION_KEY, '1');
+      } catch {
+        // ignore storage failures
+      }
+      setUnlocked(true);
+      setPasswordError(null);
+      setPasswordInput('');
+      return;
+    }
+    setPasswordError('Incorrect password');
+  };
 
   // useEffect(() => {
   //   checkApiKey();
@@ -142,13 +201,15 @@ const App: React.FC = () => {
     
     setError(null);
     setIsAnalyzing(true);
+    let analysisData: VisualizerState | null = null;
+    let resultImage: string | null = null;
     try {
       const actualHeight = refType === ReferenceType.A4_PAPER ? 29.7 : refHeight;
-      const analysisData = await analyzeMarkedRegions(roomImage, wallpaperImage, refType, actualHeight, completedBoxes);
+      analysisData = await analyzeMarkedRegions(roomImage, wallpaperImage, refType, actualHeight, completedBoxes);
       setMetadata(analysisData);
       setIsAnalyzing(false);
       setIsGenerating(true);
-      const resultImage = await generateMaskedVisualization(roomImage, wallpaperImage, analysisData);
+      resultImage = await generateMaskedVisualization(roomImage, wallpaperImage, analysisData);
       setVisualizedImage(resultImage);
     } catch (err: any) {
       if (err.message?.includes("Requested entity was not found.")) {
@@ -156,10 +217,43 @@ const App: React.FC = () => {
         handleSelectKey();
         return;
       }
-      setError("Atelier synthesis failed. Please re-check markers and spatial calibration.");
+      const detail = extractErrorDetail(err);
+      const message = detail
+        ? `Atelier synthesis failed: ${detail}`
+        : "Atelier synthesis failed. Please re-check markers and spatial calibration.";
+      setError(message);
+      try {
+        await reportVisionworxFailure(detail || message);
+      } catch {
+        // Standalone runs no-op; callback failures are non-blocking for local UI.
+      }
+      return;
     } finally {
       setIsAnalyzing(false);
       setIsGenerating(false);
+    }
+
+    if (!resultImage || !analysisData) return;
+
+    try {
+      const filename = `fromental-visualization-${Date.now()}.png`;
+      const file = await dataUrlToFile(resultImage, filename);
+      await saveToVisionworx(file, {
+        final: true,
+        metadata: {
+          tool: 'fromental-wallpaper-visualizer',
+          total_rolls_estimated: analysisData.total_rolls_estimated,
+          reference_type: analysisData.calibration?.reference_type,
+          region_count: analysisData.regions?.length ?? completedBoxes.length,
+        },
+      });
+    } catch (saveErr: any) {
+      setError("Visualization ready, but VisionWorx save failed.");
+      try {
+        await reportVisionworxFailure(saveErr?.message || "VisionWorx save failed");
+      } catch {
+        // ignore secondary callback errors
+      }
     }
   };
 
@@ -174,6 +268,41 @@ const App: React.FC = () => {
     setStartPoint(null);
     setCurrentBox(null);
   };
+
+  if (!unlocked) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center p-6 text-center">
+        <form
+          onSubmit={handlePasswordSubmit}
+          className="max-w-md w-full p-12 border border-slate-100 rounded-sm shadow-[0_4px_24px_rgba(0,0,0,0.03)]"
+        >
+          <div className="font-luxury mb-10 uppercase tracking-[0.5em] text-[#8c734b] text-2xl">FROMENTAL</div>
+          <p className="text-slate-400 text-[10px] uppercase tracking-[0.2em] mb-10 leading-relaxed">
+            Enter the atelier password to continue
+          </p>
+          <input
+            type="password"
+            value={passwordInput}
+            onChange={(e) => {
+              setPasswordInput(e.target.value);
+              if (passwordError) setPasswordError(null);
+            }}
+            autoFocus
+            placeholder="Password"
+            className="w-full border-b border-slate-200 py-4 text-center text-sm tracking-widest outline-none focus:border-[#8c734b] mb-6 bg-transparent"
+          />
+          {passwordError && (
+            <div className="mb-6 p-3 bg-red-50 border border-red-100 text-red-600 text-[10px] uppercase tracking-widest font-bold flex items-center justify-center gap-2">
+              <AlertCircle className="w-4 h-4" /> {passwordError}
+            </div>
+          )}
+          <button type="submit" className="w-full btn-fromental text-white">
+            Unlock
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   if (!keySelected) {
     return (
@@ -359,6 +488,11 @@ const App: React.FC = () => {
                      <Download className="w-4 h-4" /> Export High-Res Render
                    </button>
                 </div>
+                {error && (
+                  <div className="mt-6 p-3 bg-red-50 border border-red-100 text-red-600 text-[10px] uppercase tracking-widest font-bold flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4" /> {error}
+                  </div>
+                )}
               </div>
 
               {/* Right: Requirements Card */}

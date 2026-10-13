@@ -62,7 +62,7 @@ export async function analyzeMarkedRegions(
   `;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
+    model: 'gemini-3.1-pro-preview',
     contents: {
       parts: [
         { inlineData: { data: roomImage.data, mimeType: roomImage.mimeType } },
